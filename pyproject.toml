@@ -1,0 +1,18 @@
+[tool.poetry]
+name = "citation-inv-processing"
+version = "0.1.0"
+description = "PDF Invoice Processing with AWS Textract and Bedrock"
+authors = []
+
+[tool.poetry.dependencies]
+python = "^3.11"
+fastapi = "*"
+uvicorn = {extras = ["standard"], version = "*"}
+pymupdf = "*"
+boto3 = "*"
+python-multipart = "*"
+python-dotenv = "*"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
