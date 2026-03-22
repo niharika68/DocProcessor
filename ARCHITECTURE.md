@@ -2,7 +2,10 @@
 
 ## Workflow Diagram
 
-```svg
+![Pipeline Diagram](docs/pipeline.svg)
+
+<!-- SVG source is in docs/pipeline.svg -->
+<!--
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 600" width="900" height="600" font-family="system-ui, sans-serif">
   <defs>
     <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
@@ -138,7 +141,7 @@
   <text x="580" y="568" font-size="9" fill="#475569">Output shape is always: key_fields · items · flags</text>
 
 </svg>
-```
+-->
 
 ---
 

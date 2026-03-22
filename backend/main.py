@@ -1,7 +1,7 @@
 import base64
 import json
 import logging
-import os
+import time
 import uuid
 from pathlib import Path
 
@@ -9,23 +9,29 @@ from fastapi import FastAPI, File, UploadFile, HTTPException, Query
 from fastapi.responses import Response, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-log = logging.getLogger(__name__)
-
-log.info("AWS_REGION        = %s", os.getenv("AWS_REGION", "NOT SET"))
-log.info("BEDROCK_MODEL_ID  = %s", os.getenv("BEDROCK_MODEL_ID", "NOT SET"))
-log.info("AWS_ACCESS_KEY_ID = %s", "SET" if os.getenv("AWS_ACCESS_KEY_ID") else "NOT SET")
-log.info("AWS_SECRET_ACCESS_KEY = %s", "SET" if os.getenv("AWS_SECRET_ACCESS_KEY") else "NOT SET")
-
 from .processing.pipeline import run_pipeline
 from .processing.annotator import annotate_pdf
 from .processing.prompts import SUPPORTED_DOC_TYPES
 from .models.schemas import ProcessResponse, PageResult, Summary
 
+log = logging.getLogger(__name__)
+
 app = FastAPI(title="Invoice Processor")
 
-# In-memory session store: session_id -> {pdf_bytes, summary, doc_type}
+# ── Security constants ────────────────────────────────────────────────────────
+MAX_FILE_SIZE = 50 * 1024 * 1024   # 50 MB
+SESSION_TTL   = 60 * 60            # 1 hour in seconds
+
+# In-memory session store: session_id -> {pdf_bytes, summary, doc_type, created_at}
 _sessions: dict[str, dict] = {}
+
+
+def _purge_expired_sessions() -> None:
+    """Remove sessions older than SESSION_TTL."""
+    cutoff = time.time() - SESSION_TTL
+    expired = [sid for sid, s in _sessions.items() if s["created_at"] < cutoff]
+    for sid in expired:
+        del _sessions[sid]
 
 
 @app.get("/api/health")
@@ -44,13 +50,19 @@ async def process_invoice(
         raise HTTPException(status_code=400, detail="Only PDF files are accepted.")
 
     pdf_bytes = await file.read()
+
     if len(pdf_bytes) == 0:
         raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+    if len(pdf_bytes) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=413, detail="File too large. Maximum size is 50 MB.")
+    if not pdf_bytes.startswith(b"%PDF"):
+        raise HTTPException(status_code=400, detail="File does not appear to be a valid PDF.")
 
     try:
         result = run_pipeline(pdf_bytes, doc_type=doc_type)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        log.exception("Pipeline error")
+        raise HTTPException(status_code=500, detail="An error occurred while processing your document.")
 
     pages_out: list[PageResult] = []
     for page in result["pages"]:
@@ -71,11 +83,15 @@ async def process_invoice(
         flags=summary_data["flags"],
     )
 
+    # Purge stale sessions before adding a new one
+    _purge_expired_sessions()
+
     session_id = str(uuid.uuid4())
     _sessions[session_id] = {
         "pdf_bytes": pdf_bytes,
         "summary": summary_data,
         "doc_type": doc_type,
+        "created_at": time.time(),
     }
 
     return ProcessResponse(
@@ -108,8 +124,9 @@ async def download_annotated(session_id: str):
         pdf_bytes = session["pdf_bytes"]
         result = run_pipeline(pdf_bytes, doc_type=session["doc_type"])
         annotated = annotate_pdf(pdf_bytes, result["page_annotations"])
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        log.exception("Annotation error")
+        raise HTTPException(status_code=500, detail="An error occurred while generating the annotated PDF.")
 
     return Response(
         content=annotated,
