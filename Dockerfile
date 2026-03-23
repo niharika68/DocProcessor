@@ -5,8 +5,6 @@ WORKDIR /app/frontend
 COPY frontend/package.json frontend/package-lock.json* ./
 RUN npm install
 COPY frontend/ .
-ARG VITE_APP_PASSWORD
-ENV VITE_APP_PASSWORD=$VITE_APP_PASSWORD
 RUN npm run build
 
 # ── Stage 2: Python backend ─────────────────────────────────────────────────

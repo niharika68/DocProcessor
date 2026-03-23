@@ -1,34 +1,48 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 
-const CORRECT_PASSWORD = import.meta.env.VITE_APP_PASSWORD as string | undefined;
 const SESSION_KEY = "doc_processor_auth";
-
-function isUnlocked(): boolean {
-  return sessionStorage.getItem(SESSION_KEY) === "true";
-}
 
 interface Props {
   children: React.ReactNode;
 }
 
 export default function PasswordGate({ children }: Props) {
-  const [unlocked, setUnlocked] = useState(isUnlocked);
+  const [required, setRequired] = useState<boolean | null>(null); // null = loading
+  const [unlocked, setUnlocked] = useState(sessionStorage.getItem(SESSION_KEY) === "true");
   const [input, setInput] = useState("");
   const [error, setError] = useState(false);
+  const [loading, setLoading] = useState(false);
 
-  // If no password is configured, show the app directly
-  if (!CORRECT_PASSWORD) return <>{children}</>;
+  useEffect(() => {
+    fetch("/api/auth/check")
+      .then((r) => r.json())
+      .then((data) => setRequired(data.required))
+      .catch(() => setRequired(false)); // if check fails, don't block the app
+  }, []);
 
-  if (unlocked) return <>{children}</>;
+  if (required === null) return null; // still loading
+  if (!required || unlocked) return <>{children}</>;
 
-  function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (input === CORRECT_PASSWORD) {
-      sessionStorage.setItem(SESSION_KEY, "true");
-      setUnlocked(true);
-    } else {
+    setLoading(true);
+    try {
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: input }),
+      });
+      if (res.ok) {
+        sessionStorage.setItem(SESSION_KEY, "true");
+        setUnlocked(true);
+      } else {
+        setError(true);
+        setInput("");
+      }
+    } catch {
       setError(true);
-      setInput("");
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -81,6 +95,7 @@ export default function PasswordGate({ children }: Props) {
           )}
           <button
             type="submit"
+            disabled={loading}
             style={{
               width: "100%",
               padding: "10px",
@@ -90,11 +105,12 @@ export default function PasswordGate({ children }: Props) {
               borderRadius: 8,
               fontSize: 15,
               fontWeight: 600,
-              cursor: "pointer",
+              cursor: loading ? "not-allowed" : "pointer",
               marginTop: 4,
+              opacity: loading ? 0.7 : 1,
             }}
           >
-            Enter
+            {loading ? "Checking…" : "Enter"}
           </button>
         </form>
       </div>

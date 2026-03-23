@@ -1,6 +1,7 @@
 import base64
 import json
 import logging
+import os
 import time
 import uuid
 from pathlib import Path
@@ -8,6 +9,7 @@ from pathlib import Path
 from fastapi import FastAPI, File, UploadFile, HTTPException, Query
 from fastapi.responses import Response, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from .processing.pipeline import run_pipeline
 from .processing.annotator import annotate_pdf
@@ -37,6 +39,25 @@ def _purge_expired_sessions() -> None:
 @app.get("/api/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/api/auth/check")
+async def auth_check():
+    """Returns whether a password is required to use the app."""
+    return {"required": bool(os.getenv("VITE_APP_PASSWORD"))}
+
+
+class AuthRequest(BaseModel):
+    password: str
+
+
+@app.post("/api/auth/login")
+async def auth_login(body: AuthRequest):
+    """Validates the submitted password against the VITE_APP_PASSWORD env var."""
+    expected = os.getenv("VITE_APP_PASSWORD")
+    if not expected or body.password == expected:
+        return {"ok": True}
+    raise HTTPException(status_code=401, detail="Incorrect password.")
 
 
 @app.post("/api/process", response_model=ProcessResponse)
