@@ -31,8 +31,10 @@ export default function UploadSection({ docType }: Props) {
   }
 
   async function upload(file: File) {
-    if (!file.name.toLowerCase().endsWith(".pdf")) {
-      setError("Please upload a PDF file.");
+    const isPdf = file.name.toLowerCase().endsWith(".pdf");
+    const isVideo = file.type.startsWith("video/");
+    if (!isPdf && !isVideo) {
+      setError("Please upload a PDF or video file.");
       return;
     }
     setError(null);
@@ -82,7 +84,7 @@ export default function UploadSection({ docType }: Props) {
       <input
         ref={inputRef}
         type="file"
-        accept=".pdf"
+        accept=".pdf,video/*"
         style={{ display: "none" }}
         onChange={(e) => {
           const file = e.target.files?.[0];
@@ -90,7 +92,10 @@ export default function UploadSection({ docType }: Props) {
         }}
       />
       <p style={{ margin: 0, color: "#555", fontSize: 16 }}>
-        Drag & drop a PDF here, or <strong>click to browse</strong>
+        Drag & drop a PDF or video here, or <strong>click to browse</strong>
+      </p>
+      <p style={{ margin: "8px 0 0", color: "#888", fontSize: 13 }}>
+        Maximum file size: 250 MB
       </p>
     </div>
   );

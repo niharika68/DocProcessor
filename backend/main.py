@@ -21,10 +21,10 @@ log = logging.getLogger(__name__)
 app = FastAPI(title="Invoice Processor")
 
 # ── Security constants ────────────────────────────────────────────────────────
-MAX_FILE_SIZE = 50 * 1024 * 1024   # 50 MB
+MAX_FILE_SIZE = 250 * 1024 * 1024  # 250 MB
 SESSION_TTL   = 60 * 60            # 1 hour in seconds
 
-# In-memory session store: session_id -> {pdf_bytes, summary, doc_type, created_at}
+# In-memory session store: session_id -> {file_bytes, summary, doc_type, created_at}
 _sessions: dict[str, dict] = {}
 
 
@@ -60,6 +60,9 @@ async def auth_login(body: AuthRequest):
     raise HTTPException(status_code=401, detail="Incorrect password.")
 
 
+ALLOWED_EXTENSIONS = {".pdf", ".mp4", ".mov", ".avi", ".mkv", ".webm", ".wmv", ".flv", ".m4v"}
+
+
 @app.post("/api/process", response_model=ProcessResponse)
 async def process_invoice(
     file: UploadFile = File(...),
@@ -67,20 +70,27 @@ async def process_invoice(
 ):
     if doc_type not in SUPPORTED_DOC_TYPES:
         raise HTTPException(status_code=400, detail=f"doc_type must be one of {SUPPORTED_DOC_TYPES}")
-    if not file.filename or not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Only PDF files are accepted.")
 
-    pdf_bytes = await file.read()
+    filename_lower = (file.filename or "").lower()
+    ext = next((e for e in ALLOWED_EXTENSIONS if filename_lower.endswith(e)), None)
+    if ext is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Only PDF and video files (mp4, mov, avi, mkv, webm, wmv, flv, m4v) are accepted.",
+        )
+    is_pdf = ext == ".pdf"
 
-    if len(pdf_bytes) == 0:
+    file_bytes = await file.read()
+
+    if len(file_bytes) == 0:
         raise HTTPException(status_code=400, detail="Uploaded file is empty.")
-    if len(pdf_bytes) > MAX_FILE_SIZE:
-        raise HTTPException(status_code=413, detail="File too large. Maximum size is 50 MB.")
-    if not pdf_bytes.startswith(b"%PDF"):
+    if len(file_bytes) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=413, detail="File too large. Maximum size is 250 MB.")
+    if is_pdf and not file_bytes.startswith(b"%PDF"):
         raise HTTPException(status_code=400, detail="File does not appear to be a valid PDF.")
 
     try:
-        result = run_pipeline(pdf_bytes, doc_type=doc_type)
+        result = run_pipeline(file_bytes, doc_type=doc_type)
     except Exception:
         log.exception("Pipeline error")
         raise HTTPException(status_code=500, detail="An error occurred while processing your document.")
@@ -109,7 +119,7 @@ async def process_invoice(
 
     session_id = str(uuid.uuid4())
     _sessions[session_id] = {
-        "pdf_bytes": pdf_bytes,
+        "file_bytes": file_bytes,
         "summary": summary_data,
         "doc_type": doc_type,
         "created_at": time.time(),
@@ -141,10 +151,13 @@ async def download_annotated(session_id: str):
     if not session:
         raise HTTPException(status_code=404, detail="Session not found.")
 
+    file_bytes = session["file_bytes"]
+    if not file_bytes.startswith(b"%PDF"):
+        raise HTTPException(status_code=400, detail="Annotated download is only available for PDF files.")
+
     try:
-        pdf_bytes = session["pdf_bytes"]
-        result = run_pipeline(pdf_bytes, doc_type=session["doc_type"])
-        annotated = annotate_pdf(pdf_bytes, result["page_annotations"])
+        result = run_pipeline(file_bytes, doc_type=session["doc_type"])
+        annotated = annotate_pdf(file_bytes, result["page_annotations"])
     except Exception:
         log.exception("Annotation error")
         raise HTTPException(status_code=500, detail="An error occurred while generating the annotated PDF.")
