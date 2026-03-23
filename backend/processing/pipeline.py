@@ -1,6 +1,5 @@
 import os
 import json
-import base64
 
 import boto3
 
@@ -21,9 +20,32 @@ CATEGORY_MAP = {
     "flags": "anomaly",
 }
 
+BATCH_SIZE = 5  # Max pages sent to the AI in a single call
+
 
 def get_bedrock_client():
     return boto3.client("bedrock-runtime", region_name=os.getenv("AWS_REGION", "us-east-1"))
+
+
+def _merge_ai_results(batches: list[dict]) -> dict:
+    """Merge results from multiple AI batch calls into one unified result."""
+    merged_key_fields: dict[str, dict] = {}
+    merged_items: list[dict] = []
+    merged_flags: list[dict] = []
+
+    for batch in batches:
+        for kf in batch.get("key_fields", []):
+            field = kf.get("field", "")
+            if field and field not in merged_key_fields:
+                merged_key_fields[field] = kf
+        merged_items.extend(batch.get("items", []))
+        merged_flags.extend(batch.get("flags", []))
+
+    return {
+        "key_fields": list(merged_key_fields.values()),
+        "items": merged_items,
+        "flags": merged_flags,
+    }
 
 
 def run_pipeline(pdf_bytes: bytes, doc_type: str = "invoice") -> dict:
@@ -32,6 +54,7 @@ def run_pipeline(pdf_bytes: bytes, doc_type: str = "invoice") -> dict:
     1. Render PDF pages to PNG
     2. Run Textract on each page
     3. Send images + structured text to Nova Pro for semantic analysis
+       (batched in groups of BATCH_SIZE for large documents)
     4. Map source_words back to Textract bboxes
     Returns dict with pages (image + annotations) and summary.
     """
@@ -47,8 +70,34 @@ def run_pipeline(pdf_bytes: bytes, doc_type: str = "invoice") -> dict:
         structured = parse_blocks(blocks)
         all_structured.append(structured)
 
-    # Step 3: AI analysis
-    ai_result = _call_ai(pages, all_structured, config["system_prompt"], doc_type)
+    # Step 3: AI analysis (batched if needed)
+    if len(pages) <= BATCH_SIZE:
+        ai_result = _call_ai(pages, all_structured, config["system_prompt"], doc_type)
+    else:
+        batch_results = []
+        for batch_start in range(0, len(pages), BATCH_SIZE):
+            batch_pages = pages[batch_start: batch_start + BATCH_SIZE]
+            batch_structured = all_structured[batch_start: batch_start + BATCH_SIZE]
+
+            # Carry last page of previous batch as context (if not the first batch)
+            if batch_start > 0:
+                context_page = pages[batch_start - 1]
+                context_structured = all_structured[batch_start - 1]
+            else:
+                context_page = None
+                context_structured = None
+
+            result = _call_ai(
+                batch_pages,
+                batch_structured,
+                config["system_prompt"],
+                doc_type,
+                context_page=context_page,
+                context_structured=context_structured,
+            )
+            batch_results.append(result)
+
+        ai_result = _merge_ai_results(batch_results)
 
     # Step 4: Map coordinates + build annotations per page
     page_annotations: dict[int, list[Annotation]] = {p.page_number: [] for p in pages}
@@ -129,13 +178,37 @@ def _call_ai(
     all_structured: list[dict],
     system_prompt: str,
     doc_type: str,
+    context_page: "PageRender | None" = None,
+    context_structured: "dict | None" = None,
 ) -> dict:
     client = get_bedrock_client()
     model_id = os.getenv("MODEL_ARN") or os.getenv("BEDROCK_MODEL_ID", "amazon.nova-pro-v1:0")
 
     content = []
 
-    for i, (page, structured) in enumerate(zip(pages, all_structured)):
+    # If a context page from the previous batch is provided, prepend it as read-only context
+    if context_page is not None and context_structured is not None:
+        content.append({
+            "image": {
+                "format": "png",
+                "source": {"bytes": context_page.png_bytes},
+            }
+        })
+        kv_text = "\n".join(
+            f"  {p['key']}: {p['value']}"
+            for p in context_structured["key_value_pairs"]
+        )
+        tables_md = tables_to_markdown(context_structured["tables"])
+        content.append({
+            "text": (
+                f"--- Context: Previous Batch Last Page (page {context_page.page_number}) ---\n"
+                f"Key-Value Pairs:\n{kv_text or '  (none)'}\n\n"
+                f"Tables:\n{tables_md or '  (none)'}\n"
+                "NOTE: Do NOT extract items from this context page — it is included for continuity only.\n"
+            )
+        })
+
+    for page, structured in zip(pages, all_structured):
         content.append({
             "image": {
                 "format": "png",
@@ -152,7 +225,7 @@ def _call_ai(
 
         content.append({
             "text": (
-                f"--- Page {i + 1} Textract Output ---\n"
+                f"--- Page {page.page_number} Textract Output ---\n"
                 f"Key-Value Pairs:\n{kv_text or '  (none)'}\n\n"
                 f"Tables:\n{tables_md or '  (none)'}\n\n"
                 f"Text Lines (first 50):\n{lines_text}"
