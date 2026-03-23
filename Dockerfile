@@ -16,7 +16,9 @@ WORKDIR /app
 RUN pip install --no-cache-dir poetry
 
 # Copy dependency files and install (no virtualenv inside container)
-COPY pyproject.toml poetry.lock* ./
+# Note: poetry.lock is intentionally excluded so Poetry resolves wheels for
+# the container's Linux/amd64 platform rather than the macOS build machine.
+COPY pyproject.toml ./
 RUN poetry config virtualenvs.create false \
     && poetry install --no-interaction --no-ansi --no-root
 
